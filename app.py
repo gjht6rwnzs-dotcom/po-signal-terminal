@@ -468,4 +468,143 @@ HTML_TEMPLATE = """
             isRegister = !isRegister;
             document.getElementById('auth-title').innerText = isRegister ? 'Регистрация' : 'Вход в терминал';
             document.getElementById('auth-submit').innerText = isRegister ? 'Создать аккаунт' : 'Войти';
-            document.getElementById('switch-
+            document.getElementById('switch-text').innerText = isRegister ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Регистрация';
+            document.getElementById('auth-msg').innerText = '';
+        }
+
+        async function handleAuth() {
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value.trim();
+            const msgBox = document.getElementById('auth-msg');
+
+            if (!email || !password) {
+                msgBox.innerText = 'Заполните все поля';
+                return;
+            }
+
+            const endpoint = isRegister ? '/register' : '/login';
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email, password})
+            });
+
+            const data = await res.json();
+            if (data.success) {
+                document.getElementById('auth-screen').style.display = 'none';
+                document.getElementById('app-screen').style.display = 'flex';
+            } else {
+                msgBox.style.color = '#ff3b3b';
+                msgBox.innerText = data.message;
+            }
+        }
+
+        function selectPair(pair, btnElement) {
+            selectedPair = pair;
+            document.querySelectorAll('.pair-btn').forEach(b => b.classList.remove('active'));
+            btnElement.classList.add('active');
+
+            document.getElementById('pair-label').innerText = 'АКТИВ: ' + pair;
+            document.getElementById('analyze-btn').style.display = 'block';
+            document.getElementById('tf-info').style.display = 'block';
+            document.getElementById('result-box').innerText = '';
+            document.getElementById('result-box').className = '';
+        }
+
+        async function runAnalysis() {
+            if (!selectedPair) return;
+            const btn = document.getElementById('analyze-btn');
+            const resBox = document.getElementById('result-box');
+
+            btn.disabled = true;
+            btn.innerText = 'Анализирую...';
+            resBox.innerText = '';
+
+            try {
+                const res = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({pair: selectedPair})
+                });
+                const data = await res.json();
+
+                resBox.innerText = data.text;
+                if (data.status === 'up') {
+                    resBox.className = 'res-up';
+                } else if (data.status === 'down') {
+                    resBox.className = 'res-down';
+                } else {
+                    resBox.className = 'res-wait';
+                }
+            } catch (e) {
+                resBox.className = 'res-wait';
+                resBox.innerText = 'ОШИБКА СОЕДИНЕНИЯ';
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Анализ';
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE, pairs=list(PAIRS.keys()))
+
+
+@app.route('/logo.png')
+def logo():
+    if os.path.exists('logo.png'):
+        return send_from_directory('.', 'logo.png')
+    return '', 404
+
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    try:
+        conn = sqlite3.connect('users.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO users (email, password) VALUES (?, ?)",
+                  (email, generate_password_hash(password)))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except sqlite3.IntegrityError:
+        return jsonify({"success": False, "message": "Эта почта уже зарегистрирована"})
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT password FROM users WHERE email = ?", (email,))
+    row = c.fetchone()
+    conn.close()
+    if row and check_password_hash(row[0], password):
+        return jsonify({"success": True})
+    return jsonify({"success": False, "message": "Неверная почта или пароль"})
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    data = request.json
+    pair_name = data.get('pair')
+    ticker = PAIRS.get(pair_name)
+    if not ticker:
+        return jsonify({"status": "wait", "text": "НАДО ЖДАТЬ"})
+    result = analyze_market(ticker)
+    return jsonify(result)
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
